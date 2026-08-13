@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>超级马里奥 · Super Mario (纯代码绘制版)</title>
+<title>超级马里奥 · Super Mario (纯代码绘制版 · 全三关)</title>
 <style>
   :root { color-scheme: light; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -58,14 +58,18 @@
   <div class="tbtn" id="btnR">▶</div>
   <div class="tbtn" id="btnJ">A</div>
 </div>
-<div id="hint">纯 Canvas 代码绘制 · 无任何图片素材</div>
+<div id="hint">纯 Canvas 代码绘制 · 无任何图片素材 · 全三关</div>
 
 <script>
 "use strict";
 /* =========================================================
- *  超级马里奥 · 纯代码绘制版
+ *  超级马里奥 · 纯代码绘制版（全三关）
  *  所有图形（角色/敌人/地形/背景）均由 Canvas API 程序化绘制，
  *  所有音效均由 WebAudio 振荡器实时合成，未使用任何外部素材。
+ *
+ *  世界 1-1  绿野平原   经典地上关卡
+ *  世界 2-1  地下迷窟   洞窟主题 · 砖块隧道 · 更多敌人
+ *  世界 3-1  星空险境   夜空主题 · 浮空平台 · 快速敌人
  * ========================================================= */
 
 const cv = document.getElementById('game');
@@ -75,6 +79,8 @@ ctx.imageSmoothingEnabled = false;
 const W = 864, H = 480, TILE = 32;
 const ROWS = 15;                 // 15 * 32 = 480
 const GROUND_R = 13;             // 地面顶部所在行
+const MAX_WORLD = 3;
+const WORLD_NAMES = ['绿野平原', '地下迷窟', '星空险境'];
 
 /* ================= 画布自适应 ================= */
 function fit() {
@@ -110,83 +116,79 @@ const SFX = {
   coin()  { tone(988, 988, 0.07, 'square', 0.05); tone(1319, 1319, 0.32, 'square', 0.05, 0.07); },
   stomp() { tone(320, 90, 0.12, 'triangle', 0.12); },
   bump()  { tone(130, 80, 0.07, 'square', 0.09); },
-  block() { tone(660, 660, 0.06, 'square', 0.04); tone(880, 880, 0.1, 'square', 0.04, 0.06); },
   die()   { tone(494,494,.12,'square',.06,0); tone(466,466,.12,'square',.06,.12);
             tone(440,440,.12,'square',.06,.24); tone(392,120,.5,'square',.06,.36); },
   win()   { const m=[523,659,784,1047,784,1047];
             m.forEach((f,i)=>tone(f,f,.14,'square',.055,i*.11));
             tone(1319,1319,.5,'square',.05,m.length*.11); },
-  oneUp() { tone(659,659,.08,'square',.05); tone(784,784,.08,'square',.05,.08); tone(1319,1319,.2,'square',.05,.16); }
+  intro() { tone(392,392,.1,'square',.05); tone(523,523,.1,'square',.05,.1); tone(659,659,.22,'square',.05,.2); }
 };
 
 /* ================= 关卡数据 ================= */
+let world = 1;
 let LEVEL_W = 178;
 let grid = [];           // grid[r][c]
 let pipes = [];          // {c,r,w,h}
+let enemySpawns = [];    // 每关独立的敌人出生列
 let flagX = 160;         // 旗杆所在列
-const castleC = 165;     // 城堡装饰位置（列）
-let spawn = { x: 64, y: 0 };
+let castleC = 165;       // 城堡装饰位置（列）
+let spawn = { x: 64 };
 
-function buildLevel() {
-  grid = [];
-  for (let r = 0; r < ROWS; r++) grid.push(new Array(LEVEL_W).fill('.'));
-  pipes = [];
+/* ---- 建图辅助（操作当前 grid） ---- */
+function set(c, r, ch) { if (c >= 0 && c < LEVEL_W && r >= 0 && r < ROWS) grid[r][c] = ch; }
+function ground(a, b) { for (let c = a; c <= b; c++) { set(c, 13, '#'); set(c, 14, '#'); } }
+function pipe(c, h) {
+  pipes.push({ c, r: 13 - h, w: 2, h });
+  for (let r = 13 - h; r < 13; r++) { set(c, r, 'P'); set(c + 1, r, 'P'); }
+}
+function coinsRow(a, b, r) { for (let c = a; c <= b; c++) set(c, r, 'C'); }
+function stair(c, h, dir) {           // dir=1 上升，-1 下降
+  for (let i = 0; i < h; i++) {
+    const hh = dir > 0 ? i + 1 : h - i;
+    for (let k = 0; k < hh; k++) set(c + i, 12 - k, '#');
+  }
+}
+function tower(c, h) { for (let k = 0; k < h; k++) set(c, 12 - k, '#'); }
+function bricksRow(a, b, r, ch) { for (let c = a; c <= b; c++) set(c, r, ch || 'B'); }
 
-  const set = (c, r, ch) => { if (c >= 0 && c < LEVEL_W && r >= 0 && r < ROWS) grid[r][c] = ch; };
-  const ground = (a, b) => { for (let c = a; c <= b; c++) { set(c, 13, '#'); set(c, 14, '#'); } };
-  const pipe = (c, h) => {
-    pipes.push({ c, r: 13 - h, w: 2, h });
-    for (let r = 13 - h; r < 13; r++) { set(c, r, 'P'); set(c + 1, r, 'P'); }
-  };
-  const coinsRow = (a, b, r) => { for (let c = a; c <= b; c++) set(c, r, 'C'); };
-  const stair = (c, h, dir) => {           // dir=1 上升
-    for (let i = 0; i < h; i++) {
-      const hh = dir > 0 ? i + 1 : h - i;
-      for (let k = 0; k < hh; k++) set(c + i, 12 - k, '#');
-    }
-  };
+/* ---------- 世界 1-1 · 绿野平原（原关卡） ---------- */
+function buildWorld1() {
+  LEVEL_W = 178; flagX = 160; castleC = 165;
+  spawn = { x: 64 };
+  enemySpawns = [13, 26, 31, 44, 46, 61, 77, 80, 92, 103, 107, 120, 125, 135, 139, 144];
 
-  /* ---- 地形 ---- */
-  ground(0, 35);  ground(38, 54);  ground(58, 68);  ground(73, 95);
+  ground(0, 35);  ground(38, 55);  ground(58, 68);  ground(73, 95);
   ground(99, 129); ground(132, 177);
 
-  /* ---- 开局 ---- */
   set(9, 9, '?');
   coinsRow(10, 12, 8);
   set(14, 9, 'B'); set(15, 9, '?'); set(16, 9, 'B'); set(17, 9, '?'); set(18, 9, 'B');
   set(16, 5, '?');
 
-  pipe(22, 2); pipe(28, 3); pipe(33, 4);
+  pipe(22, 2); pipe(28, 3); pipe(33, 3);
 
-  /* ---- 第一坑 + 砖块区 ---- */
   coinsRow(36, 37, 10);
-  coinsRow(41, 45, 9);
-  for (let c = 41; c <= 45; c++) set(c, 9, c === 43 ? '?' : 'B');
+  set(41, 9, 'B'); set(42, 9, 'B'); set(43, 9, '?'); set(44, 9, 'B'); set(45, 9, 'B');
   coinsRow(41, 45, 5);
 
   pipe(49, 3);
 
-  /* ---- 宽坑 + 金币拱门 ---- */
   coinsRow(55, 57, 9);
   set(60, 9, '?'); set(61, 9, 'B'); set(62, 9, '?');
 
-  /* ---- 台阶 + 高台 ---- */
   stair(64, 4, 1);
   coinsRow(65, 66, 7);
   set(69, 9, 'B'); set(70, 9, '?'); set(71, 9, 'B');
 
-  /* ---- 中段平原 ---- */
-  set(76, 9, '?'); set(78, 9, '?'); set(77, 5, '?');
+  set(76, 9, '?'); set(78, 9, '?');
   coinsRow(81, 84, 9);
   pipe(87, 2);
   set(91, 9, 'B'); set(92, 9, 'B'); set(93, 9, '?'); set(94, 9, 'B');
 
-  /* ---- 连续小坑 ---- */
   coinsRow(96, 98, 9);
   coinsRow(100, 101, 8);
   set(104, 9, '?'); set(106, 9, '?'); set(105, 5, 'B'); set(106, 5, 'B');
 
-  /* ---- 大台阶与滑降 ---- */
   stair(110, 4, 1);
   stair(115, 4, -1);
   coinsRow(112, 113, 6);
@@ -195,24 +197,174 @@ function buildLevel() {
   set(126, 9, 'B'); set(127, 9, '?'); set(128, 9, 'B');
   coinsRow(126, 128, 5);
 
-  /* ---- 最后一段 ---- */
   coinsRow(133, 134, 10);
   set(136, 9, '?'); set(137, 9, 'B'); set(138, 9, '?');
   pipe(141, 2);
   set(145, 9, 'B'); set(146, 9, '?'); set(147, 9, 'B');
   coinsRow(145, 147, 5);
 
-  /* ---- 终点大台阶 + 旗杆 ---- */
   stair(150, 8, 1);
-  set(flagX, 12, '#');              // 旗杆底座
-  // 城堡（纯装饰）
+  set(flagX, 12, '#');
+}
+
+/* ---------- 世界 2-1 · 地下迷窟 ---------- */
+function buildWorld2() {
+  LEVEL_W = 180; flagX = 166; castleC = 171;
+  spawn = { x: 64 };
+  enemySpawns = [12, 17, 22, 33, 43, 57, 63, 73, 88, 92, 94, 102, 122, 124, 126, 131, 145, 148];
+
+  ground(0, 23); ground(26, 38); ground(42, 65); ground(69, 79);
+  ground(83, 103); ground(107, 137); ground(140, 179);
+  // 洞顶
+  for (let c = 0; c < LEVEL_W; c++) set(c, 0, '#');
+
+  set(8, 9, '?');
+
+  // 砖块走廊（可从砖下穿过捡金币，也可跳上砖顶）
+  bricksRow(10, 18, 10);
+  coinsRow(11, 17, 12);
+  set(13, 7, 'B'); set(14, 7, '?'); set(15, 7, 'B');
+  coinsRow(13, 15, 5);
+
+  pipe(20, 2);
+  coinsRow(24, 25, 10);          // 第一坑
+  set(27, 9, '?');
+
+  // 双层砖隧道
+  bricksRow(30, 36, 10);
+  bricksRow(31, 35, 6);
+  coinsRow(31, 35, 8);
+
+  // 坑 + 单砖跳台
+  set(40, 10, 'B');
+  coinsRow(39, 41, 8);
+
+  stair(44, 4, 1);
+  coinsRow(46, 49, 8);
+  stair(48, 4, -1);
+
+  pipe(60, 3);
+  coinsRow(66, 68, 9);           // 坑
+
+  set(72, 9, '?'); set(74, 9, '?');
+  coinsRow(75, 78, 12);
+
+  // 坑 + 跳台
+  set(81, 10, 'B');
+  coinsRow(80, 82, 7);
+
+  // 低矮砖顶通道（敌人在下方巡逻）
+  bricksRow(86, 96, 8);
+  set(90, 8, '?');
+  coinsRow(87, 95, 11);
+
+  pipe(100, 3);
+
+  // 坑 + 跳台
+  set(105, 10, 'B');
+  coinsRow(104, 106, 8);
+
+  // 石柱山（连续可攀爬，每级落差不超过 2 格）
+  tower(111, 2); tower(112, 2); tower(113, 4); tower(114, 4); tower(115, 2); tower(116, 2);
+  coinsRow(113, 115, 6);
+
+  bricksRow(129, 133, 9);
+  set(131, 9, '?');
+  coinsRow(130, 132, 5);
+
+  coinsRow(138, 139, 10);        // 坑
+  pipe(143, 2);
+
+  set(147, 9, '?'); set(149, 9, 'B'); set(150, 9, '?');
+
+  stair(154, 8, 1);
+  set(flagX, 12, '#');
+}
+
+/* ---------- 世界 3-1 · 星空险境 ---------- */
+function buildWorld3() {
+  LEVEL_W = 188; flagX = 174; castleC = 179;
+  spawn = { x: 64 };
+  enemySpawns = [11, 18, 26, 36, 40, 58, 60, 79, 84, 98, 100, 102, 112, 114, 116, 131, 145, 155, 157, 160];
+
+  ground(0, 12); ground(15, 27); ground(31, 45); ground(50, 64);
+  ground(68, 85); ground(89, 105); ground(109, 125); ground(129, 150); ground(153, 187);
+
+  set(8, 9, '?'); set(10, 9, '?');
+  coinsRow(13, 14, 10);          // 坑
+
+  // 浮空平台区
+  bricksRow(16, 18, 10);
+  bricksRow(21, 23, 8);
+  coinsRow(21, 23, 7);
+  pipe(24, 3);
+
+  // 坑 + 单砖跳台（砖块降至第 10 行，平地可跳上）
+  set(29, 10, 'B');
+  coinsRow(28, 30, 8);
+
+  // 砖块问号阵
+  set(34, 9, 'B'); set(35, 9, '?'); set(36, 9, 'B'); set(37, 9, '?'); set(38, 9, 'B');
+  coinsRow(35, 37, 5);
+
+  // 宽坑 + 双砖跳台
+  set(47, 10, 'B'); set(48, 10, 'B');
+  coinsRow(46, 49, 8);
+
+  pipe(53, 3);
+  coinsRow(57, 59, 9);
+  set(62, 9, '?');
+
+  coinsRow(65, 67, 9);           // 坑
+
+  stair(70, 4, 1);
+  stair(74, 4, -1);
+  coinsRow(72, 75, 8);
+
+  // 坑 + 跳台（砖块降至第 10 行，平地可跳上）
+  set(87, 10, 'B');
+  coinsRow(86, 88, 8);
+
+  // 高低双层平台
+  bricksRow(92, 95, 9);
+  bricksRow(93, 94, 6);
+  coinsRow(93, 94, 5);
+
+  // 坑 + 跳台
+  set(107, 10, 'B');
+  coinsRow(106, 108, 8);
+
+  set(120, 9, '?'); set(122, 9, '?');
+
+  coinsRow(126, 128, 9);         // 坑
+
+  stair(133, 4, 1);
+  stair(137, 4, -1);
+  coinsRow(135, 138, 8);
+
+  pipe(147, 3);
+  coinsRow(151, 152, 10);        // 坑
+
+  set(156, 9, '?');
+  stair(162, 8, 1);
+  set(flagX, 12, '#');
+}
+
+function buildLevel(w) {
+  grid = [];
+  for (let r = 0; r < ROWS; r++) grid.push(new Array(400).fill('.'));
+  pipes = [];
+  if (w === 1) buildWorld1();
+  else if (w === 2) buildWorld2();
+  else buildWorld3();
+  // 裁剪到实际宽度
+  for (let r = 0; r < ROWS; r++) grid[r].length = LEVEL_W;
 }
 
 /* ================= 实体 ================= */
 let player, enemies, particles, popCoins, bumps, camX, score, coins, lives, time, timeAcc;
-let state = 'MENU';   // MENU | PLAY | DYING | WIN | OVER | PAUSE
+let state = 'MENU';   // MENU | INTRO | PLAY | DYING | WIN | OVER | END | PAUSE
 let animT = 0, stateT = 0, winPhase = 0, flagSlide = 0, fwAcc = 0;
-const ENEMY_SPAWNS = [13, 26, 31, 44, 46, 61, 77, 80, 92, 103, 107, 120, 125, 135, 139, 144];
 
 function makePlayer() {
   return {
@@ -221,17 +373,28 @@ function makePlayer() {
     coyote: 0, jbuf: 0, jumpHeld: false
   };
 }
-function resetLevel(full) {
-  buildLevel();
+function enemySpeed() { return 0.6 + (world - 1) * 0.09; }
+
+function resetLevel() {
+  buildLevel(world);
   player = makePlayer();
-  enemies = ENEMY_SPAWNS.map(c => ({
+  enemies = enemySpawns.map(c => ({
     x: c * TILE + 3, y: 13 * TILE - 27, w: 26, h: 26,
-    vx: -0.6, vy: 0, onGround: false, squash: -1, dead: false, animT: Math.random() * 100
+    vx: -enemySpeed(), vy: 0, onGround: false, squash: -1, dead: false, animT: Math.random() * 100
   }));
   particles = []; popCoins = []; bumps = [];
-  camX = 0;
-  if (full) { score = 0; coins = 0; lives = 3; time = 300; }
-  timeAcc = 0; flagSlide = 0; winPhase = 0;
+  camX = 0; timeAcc = 0; flagSlide = 0; winPhase = 0;
+}
+function enterLevel() {
+  resetLevel();
+  time = 300;
+  state = 'INTRO'; stateT = 0;
+  SFX.intro();
+}
+function startGame() {
+  ensureAudio();
+  world = 1; score = 0; coins = 0; lives = 3;
+  enterLevel();
 }
 
 /* ================= 输入 ================= */
@@ -243,6 +406,7 @@ const input = {
   jump()  { return keys['Space'] || keys['ArrowUp'] || keys['KeyW'] || touch.j; }
 };
 const JUMP_KEYS = ['Space', 'ArrowUp', 'KeyW'];
+const RESTARTABLE = ['MENU', 'OVER', 'END'];
 
 window.addEventListener('keydown', e => {
   if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) e.preventDefault();
@@ -251,7 +415,7 @@ window.addEventListener('keydown', e => {
   ensureAudio();
   if (JUMP_KEYS.includes(e.code) && player) player.jbuf = 8;
   if (e.code === 'Enter' || e.code === 'Space') {
-    if (state === 'MENU' || state === 'OVER' || state === 'WIN') startGame();
+    if (RESTARTABLE.includes(state)) startGame();
   }
   if ((e.code === 'KeyP' || e.code === 'Escape') && (state === 'PLAY' || state === 'PAUSE')) {
     state = state === 'PLAY' ? 'PAUSE' : 'PLAY';
@@ -263,7 +427,7 @@ window.addEventListener('keyup', e => {
 });
 cv.addEventListener('pointerdown', () => {
   ensureAudio();
-  if (state === 'MENU' || state === 'OVER' || state === 'WIN') startGame();
+  if (RESTARTABLE.includes(state)) startGame();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && state === 'PLAY') state = 'PAUSE';
@@ -274,7 +438,7 @@ function bindBtn(id, key) {
   const el = document.getElementById(id);
   const on = e => { e.preventDefault(); ensureAudio(); touch[key] = true; el.classList.add('on');
                     if (key === 'j' && player) player.jbuf = 8;
-                    if (key === 'j' && (state === 'MENU' || state === 'OVER' || state === 'WIN')) startGame(); };
+                    if (key === 'j' && RESTARTABLE.includes(state)) startGame(); };
   const off = e => { e.preventDefault(); touch[key] = false; el.classList.remove('on');
                      if (key === 'j' && player && player.vy < -4) player.vy = -4; };
   el.addEventListener('pointerdown', on);
@@ -283,12 +447,6 @@ function bindBtn(id, key) {
   el.addEventListener('pointercancel', off);
 }
 bindBtn('btnL', 'l'); bindBtn('btnR', 'r'); bindBtn('btnJ', 'j');
-
-function startGame() {
-  ensureAudio();
-  resetLevel(true);
-  state = 'PLAY'; stateT = 0;
-}
 
 /* ================= 碰撞工具 ================= */
 const SOLID = '#B?UP';
@@ -354,6 +512,13 @@ function step() {
   if (state === 'PLAY') stepPlay();
   else if (state === 'DYING') stepDying();
   else if (state === 'WIN') stepWin();
+  else if (state === 'INTRO') {
+    if (stateT > 110) { state = 'PLAY'; stateT = 0; }
+  }
+  else if (state === 'END') {
+    fwAcc++;
+    if (fwAcc % 24 === 0) firework(camX + 80 + Math.random() * (W - 160), 60 + Math.random() * 180);
+  }
 
   // 通用动画计时
   for (const b of bumps) b.t++;
@@ -545,7 +710,7 @@ function stepDying() {
   if (stateT > 30 && p.y > ROWS * TILE + 200) {
     lives--;
     if (lives > 0) {
-      resetLevel(false);
+      resetLevel();
       state = 'PLAY'; stateT = 0;
     } else {
       state = 'OVER'; stateT = 0;
@@ -570,10 +735,14 @@ function stepWin() {
     if (stateT > 150 || p.x > (castleC + 2.2) * TILE) { winPhase = 2; stateT = 0; }
     const target = Math.max(0, Math.min(p.x - W * 0.38, LEVEL_W * TILE - W));
     camX += (target - camX) * 0.12;
-  } else {                                    // 烟花庆祝
+  } else {                                    // 烟花庆祝 → 进入下一关
     fwAcc++;
     if (fwAcc % 26 === 0) {
       firework(camX + 100 + Math.random() * (W - 200), 60 + Math.random() * 160);
+    }
+    if (stateT > 240) {
+      if (world < MAX_WORLD) { world++; enterLevel(); }
+      else { state = 'END'; stateT = 0; fwAcc = 0; }
     }
   }
 }
@@ -584,6 +753,13 @@ function stepWin() {
 const PAL = {
   R: '#e73c2e', S: '#f8b878', H: '#6d3b12', K: '#161616',
   B: '#2b58d8', Y: '#ffd23f', W: '#ffffff'
+};
+
+/* ---- 各世界地形配色 ---- */
+const TILEPAL = {
+  1: { g1:'#c9793b', g2:'#f0b97a', g3:'#8a4a20', b1:'#b5502a', b2:'#e2854f', b3:'#5e2413' },
+  2: { g1:'#3a5a9c', g2:'#7fa8e8', g3:'#1e2f5c', b1:'#3f66b0', b2:'#82aaee', b3:'#16224a' },
+  3: { g1:'#b06a34', g2:'#e0a868', g3:'#7a4018', b1:'#a3482a', b2:'#d07a48', b3:'#522010' }
 };
 
 /* ---- 马里奥像素图（12×16，代码手工定义） ---- */
@@ -706,23 +882,68 @@ function frameBottomPad(map) {
   return 0;
 }
 
-/* ---- 背景 ---- */
-function drawSky() {
+/* ---------------- 背景（按世界主题） ---------------- */
+function drawSkyDay() {
   const g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#4a8fe0');
   g.addColorStop(0.65, '#7fbef5');
   g.addColorStop(1, '#c8e8ff');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
-  // 太阳
   ctx.fillStyle = 'rgba(255,244,180,.9)';
   ctx.beginPath(); ctx.arc(W - 110, 78, 34, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = 'rgba(255,244,180,.25)';
   ctx.beginPath(); ctx.arc(W - 110, 78, 46, 0, Math.PI * 2); ctx.fill();
 }
+function drawSkyNight() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0a1636');
+  g.addColorStop(0.6, '#274a86');
+  g.addColorStop(1, '#4a72b0');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  // 月亮
+  ctx.fillStyle = '#f4f0d8';
+  ctx.beginPath(); ctx.arc(W - 110, 78, 30, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#d8d2b4';
+  ctx.beginPath(); ctx.arc(W - 120, 70, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(W - 100, 88, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(W - 104, 66, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(244,240,216,.15)';
+  ctx.beginPath(); ctx.arc(W - 110, 78, 44, 0, Math.PI * 2); ctx.fill();
+}
+function drawStars() {
+  const off = -camX * 0.25;
+  const span = LEVEL_W * TILE * 0.25 + W + 200;
+  for (let i = 0; i < 70; i++) {
+    const x = ((i * 173 + 47 + off) % span + span) % span - 100;
+    const y = 12 + (i * 89) % 260;
+    const tw = 0.4 + 0.6 * Math.abs(Math.sin(animT * 2.4 + i * 1.7));
+    ctx.fillStyle = `rgba(255,255,255,${0.25 + tw * 0.6})`;
+    const s = (i % 3 === 0) ? 2.5 : 1.6;
+    ctx.fillRect(x, y, s, s);
+  }
+}
+function drawCaveBG() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#05070f');
+  g.addColorStop(0.5, '#0d1428');
+  g.addColorStop(1, '#15203e');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  // 洞壁微光斑点（视差）
+  const off = -camX * 0.4;
+  const span = LEVEL_W * TILE * 0.4 + W + 300;
+  for (let i = 0; i < 46; i++) {
+    const x = ((i * 211 + 90 + off) % span + span) % span - 150;
+    const y = 40 + (i * 73) % 380;
+    ctx.fillStyle = `rgba(110,150,230,${0.05 + (i % 5) * 0.02})`;
+    ctx.fillRect(x, y, 3 + (i % 3), 3 + (i % 2));
+  }
+}
 
-function drawCloud(x, y, s) {
-  ctx.fillStyle = 'rgba(255,255,255,.92)';
+function drawCloud(x, y, s, alpha) {
+  ctx.fillStyle = `rgba(255,255,255,${alpha})`;
   ctx.beginPath();
   ctx.arc(x, y, 16 * s, 0, Math.PI * 2);
   ctx.arc(x + 20 * s, y - 9 * s, 19 * s, 0, Math.PI * 2);
@@ -730,35 +951,38 @@ function drawCloud(x, y, s) {
   ctx.fill();
   ctx.fillRect(x - 14 * s, y, 70 * s, 14 * s);
 }
-function drawClouds() {
+function drawClouds(alpha) {
   const off = -camX * 0.35;
   const span = LEVEL_W * TILE * 0.35 + W + 300;
   for (let i = 0; i < 14; i++) {
     const cx = ((i * 337 + 120 + off) % span + span) % span - 150;
     const cy = 52 + (i % 3) * 34 + (i % 2) * 12;
-    drawCloud(cx, cy, 0.8 + (i % 3) * 0.25);
+    drawCloud(cx, cy, 0.8 + (i % 3) * 0.25, alpha);
   }
 }
-function drawHills() {
+function drawHills(c1, c2) {
   const off = -camX * 0.5;
   const span = LEVEL_W * TILE * 0.5 + W + 600;
   for (let i = 0; i < 10; i++) {
     const hx = ((i * 560 + off) % span + span) % span - 300;
     const big = i % 2 === 0;
     const r = big ? 105 : 65;
-    ctx.fillStyle = big ? '#3f9e46' : '#57b65d';
+    ctx.fillStyle = big ? c1 : c2;
     ctx.beginPath(); ctx.arc(hx, GROUND_R * TILE, r, Math.PI, 0); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,.14)';
+    ctx.fillStyle = 'rgba(255,255,255,.10)';
     ctx.beginPath(); ctx.arc(hx - r * 0.3, GROUND_R * TILE, r * 0.62, Math.PI, 0); ctx.fill();
   }
 }
-function drawBushes() {
+function drawBushes(color) {
   const positions = [6, 19, 41, 63, 82, 104, 124, 146];
   for (const c of positions) {
+    if (c >= LEVEL_W - 4) continue;
     const x = c * TILE - camX;
     if (x < -150 || x > W + 150) continue;
+    // 灌木下方必须是地面才绘制
+    if (!SOLID.includes(tileAt(c, 13))) continue;
     const y = GROUND_R * TILE;
-    ctx.fillStyle = '#2f8f3a';
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(x, y - 8, 17, Math.PI * 0.9, Math.PI * 2.05);
     ctx.arc(x + 24, y - 12, 20, Math.PI * 0.9, Math.PI * 2.05);
@@ -767,29 +991,36 @@ function drawBushes() {
     ctx.fillRect(x - 16, y - 8, 82, 8);
   }
 }
+function drawBackground() {
+  if (world === 1) {
+    drawSkyDay(); drawClouds(0.92); drawHills('#3f9e46', '#57b65d'); drawBushes('#2f8f3a');
+  } else if (world === 2) {
+    drawCaveBG();
+  } else {
+    drawSkyNight(); drawStars(); drawClouds(0.22); drawHills('#2b6e33', '#3a8a42'); drawBushes('#256e2e');
+  }
+}
 
 /* ---- 城堡（终点装饰） ---- */
 function drawCastle() {
   const x = Math.round(castleC * TILE - camX);
   const gy = GROUND_R * TILE;
   if (x < -260 || x > W + 60) return;
-  const brick = '#b8b8c0', dark = '#71717e', door = '#20242c';
-  // 主体
+  const cave = world === 2;
+  const brick = cave ? '#6a7288' : '#b8b8c0';
+  const dark = cave ? '#3c4258' : '#71717e';
+  const door = '#20242c';
   ctx.fillStyle = brick;
   ctx.fillRect(x, gy - 96, 160, 96);
-  // 顶部塔楼
   ctx.fillRect(x + 40, gy - 152, 80, 56);
-  // 垛口
   ctx.fillStyle = dark;
   for (let i = 0; i < 5; i++) ctx.fillRect(x + i * 34, gy - 110, 20, 14);
   for (let i = 0; i < 3; i++) ctx.fillRect(x + 42 + i * 28, gy - 166, 18, 14);
-  // 砖缝
-  ctx.strokeStyle = 'rgba(80,80,95,.5)';
+  ctx.strokeStyle = cave ? 'rgba(20,24,40,.6)' : 'rgba(80,80,95,.5)';
   ctx.lineWidth = 1;
   for (let yy = gy - 88; yy < gy; yy += 16) {
     ctx.beginPath(); ctx.moveTo(x, yy); ctx.lineTo(x + 160, yy); ctx.stroke();
   }
-  // 门
   ctx.fillStyle = door;
   ctx.beginPath();
   ctx.moveTo(x + 62, gy);
@@ -797,7 +1028,6 @@ function drawCastle() {
   ctx.arc(x + 80, gy - 44, 18, Math.PI, 0);
   ctx.lineTo(x + 98, gy);
   ctx.fill();
-  // 窗
   ctx.fillRect(x + 18, gy - 74, 14, 20);
   ctx.fillRect(x + 128, gy - 74, 14, 20);
   ctx.fillRect(x + 72, gy - 140, 16, 20);
@@ -808,17 +1038,14 @@ function drawFlag() {
   const px = Math.round(flagX * TILE - camX + 14);
   const topY = 4 * TILE, baseY = 12 * TILE;
   if (px < -60 || px > W + 60) return;
-  // 杆
   ctx.fillStyle = '#cdd6de';
   ctx.fillRect(px, topY, 5, baseY - topY);
   ctx.fillStyle = '#8fa0ad';
   ctx.fillRect(px + 4, topY, 1, baseY - topY);
-  // 顶球
   ctx.fillStyle = '#3fae49';
   ctx.beginPath(); ctx.arc(px + 2, topY - 5, 8, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#7fe08a';
   ctx.beginPath(); ctx.arc(px, topY - 7, 3, 0, Math.PI * 2); ctx.fill();
-  // 旗面（胜利时滑落）
   const fy = topY + 12 + flagSlide;
   const wob = Math.sin(animT * 5) * 3;
   ctx.fillStyle = '#2e9e3f';
@@ -834,23 +1061,25 @@ function drawFlag() {
 
 /* ---- 地形贴图 ---- */
 function drawGroundTile(x, y) {
-  ctx.fillStyle = '#c9793b';
+  const P = TILEPAL[world];
+  ctx.fillStyle = P.g1;
   ctx.fillRect(x, y, TILE, TILE);
-  ctx.fillStyle = '#f0b97a';
+  ctx.fillStyle = P.g2;
   ctx.fillRect(x, y, TILE, 3);
   ctx.fillRect(x, y, 3, TILE);
-  ctx.fillStyle = '#8a4a20';
+  ctx.fillStyle = P.g3;
   ctx.fillRect(x, y + TILE - 4, TILE, 4);
   ctx.fillRect(x + TILE - 4, y, 4, TILE);
   ctx.fillRect(x + 9, y + 12, 6, 4);
   ctx.fillRect(x + 20, y + 21, 6, 4);
 }
 function drawBrickTile(x, y) {
-  ctx.fillStyle = '#b5502a';
+  const P = TILEPAL[world];
+  ctx.fillStyle = P.b1;
   ctx.fillRect(x, y, TILE, TILE);
-  ctx.fillStyle = '#e2854f';
+  ctx.fillStyle = P.b2;
   ctx.fillRect(x, y, TILE, 2);
-  ctx.fillStyle = '#5e2413';
+  ctx.fillStyle = P.b3;
   ctx.fillRect(x, y + 14, TILE, 3);
   ctx.fillRect(x, y + TILE - 3, TILE, 3);
   ctx.fillRect(x + 15, y, 3, 14);
@@ -897,14 +1126,12 @@ function drawPipeObj(p) {
   const x = Math.round(p.c * TILE - camX), y = Math.round(p.r * TILE);
   if (x + p.w * TILE < -10 || x > W + 10) return;
   const wpx = p.w * TILE;
-  // 管身
   ctx.fillStyle = '#43b047';
   ctx.fillRect(x + 3, y + TILE, wpx - 6, (p.h - 1) * TILE);
   ctx.fillStyle = '#1e7a26';
   ctx.fillRect(x + wpx - 10, y + TILE, 7, (p.h - 1) * TILE);
   ctx.fillStyle = '#8fe08f';
   ctx.fillRect(x + 7, y + TILE, 6, (p.h - 1) * TILE);
-  // 管口
   ctx.fillStyle = '#43b047';
   ctx.fillRect(x - 2, y, wpx + 4, TILE - 2);
   ctx.fillStyle = '#1e7a26';
@@ -948,24 +1175,19 @@ function drawGoomba(g) {
     return;
   }
   const step = Math.sin(g.animT * 12);
-  // 身体
   ctx.fillStyle = '#9c511f';
   ctx.beginPath(); ctx.ellipse(x + 13, y + 13, 13, 12.5, 0, 0, Math.PI * 2); ctx.fill();
-  // 脚
   ctx.fillStyle = '#5a2d0c';
   ctx.beginPath(); ctx.ellipse(x + 6 + step * 2.5, y + 24, 7, 4.5, 0, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.ellipse(x + 20 - step * 2.5, y + 24, 7, 4.5, 0, 0, Math.PI * 2); ctx.fill();
-  // 脸部浅色
   ctx.fillStyle = '#e8c39e';
   ctx.beginPath(); ctx.ellipse(x + 13, y + 16, 8.5, 6.5, 0, 0, Math.PI * 2); ctx.fill();
-  // 眼睛
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.ellipse(x + 9, y + 12, 3.2, 4.2, 0, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.ellipse(x + 17, y + 12, 3.2, 4.2, 0, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#161616';
   ctx.beginPath(); ctx.ellipse(x + 9.8, y + 13.5, 1.5, 2, 0, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.ellipse(x + 16.2, y + 13.5, 1.5, 2, 0, 0, Math.PI * 2); ctx.fill();
-  // 怒眉
   ctx.strokeStyle = '#3a1c06';
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(x + 6, y + 7.5); ctx.lineTo(x + 11.5, y + 10); ctx.stroke();
@@ -985,13 +1207,12 @@ function hudText(txt, x, y, size, align) {
 function drawHUD() {
   hudText('MARIO', 24, 10);
   hudText(String(score).padStart(6, '0'), 24, 28);
-  // 金币图标
   ctx.fillStyle = '#a8720a';
   ctx.beginPath(); ctx.ellipse(196, 36, 8, 9, 0, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#ffd23f';
   ctx.beginPath(); ctx.ellipse(196, 36, 5.5, 7, 0, 0, Math.PI * 2); ctx.fill();
   hudText('×' + String(coins).padStart(2, '0'), 210, 28);
-  hudText('世界 1-1', W / 2, 10, 15, 'center');
+  hudText(`世界 ${world}-1`, W / 2, 10, 15, 'center');
   hudText('TIME ' + Math.max(0, time), W / 2, 28, 15, 'center');
   hudText('生命 ×' + lives, W - 24, 28, 15, 'right');
 }
@@ -1009,10 +1230,18 @@ function bigText(txt, y, size, color) {
   ctx.fillStyle = color || '#fff';
   ctx.fillText(txt, W / 2, y);
 }
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
 
 function drawMenu() {
   panel(0.42);
-  // LOGO 底框
   const lg = ctx.createLinearGradient(0, 92, 0, 196);
   lg.addColorStop(0, '#e73c2e'); lg.addColorStop(1, '#a31f14');
   ctx.fillStyle = lg;
@@ -1027,42 +1256,49 @@ function drawMenu() {
   ctx.fillStyle = '#ffd23f';
   ctx.fillText('S U P E R   M A R I O', W / 2, 176);
 
-  if (Math.floor(animT * 2) % 2 === 0) bigText('— 点击屏幕 或 按空格键 开始游戏 —', 262, 22, '#fff');
-  bigText('← → / A D 移动    空格 / ↑ / W 跳跃    P 暂停', 312, 16, '#cfe4ff');
-  bigText('踩扁栗子怪 · 顶问号砖 · 吃金币 · 冲向旗杆！', 340, 16, '#cfe4ff');
-  bigText('本游戏全部图形与音效均由代码实时生成', 388, 13, 'rgba(255,255,255,.55)');
+  if (Math.floor(animT * 2) % 2 === 0) bigText('— 点击屏幕 或 按空格键 开始游戏 —', 252, 22, '#fff');
+  bigText('三个世界：绿野平原 → 地下迷窟 → 星空险境', 298, 17, '#ffd23f');
+  bigText('← → / A D 移动    空格 / ↑ / W 跳跃    P 暂停', 328, 15, '#cfe4ff');
+  bigText('踩扁栗子怪 · 顶问号砖 · 吃金币 · 冲向旗杆！', 354, 15, '#cfe4ff');
+  bigText('本游戏全部图形与音效均由代码实时生成', 392, 13, 'rgba(255,255,255,.55)');
 
-  // 装饰小马里奥
   drawPixels(M_STAND, W / 2 - 306, 120, 3.4, false);
   drawPixels(M_JUMP, W / 2 + 270, 116, 3.4, true);
 }
-function roundRect(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+function drawIntro() {
+  ctx.fillStyle = '#05070f';
+  ctx.fillRect(0, 0, W, H);
+  bigText(`世界 ${world}-1`, 180, 46, '#fff');
+  bigText(WORLD_NAMES[world - 1], 232, 24, '#ffd23f');
+  drawPixels(M_STAND, W / 2 - 60, 280, 3, false);
+  hudText('MARIO ×' + lives, W / 2 + 6, 300, 18, 'left');
+  if (stateT > 55 && Math.floor(animT * 3) % 2 === 0) bigText('READY ?', 400, 20, '#8fb8ff');
 }
 function drawGameOver() {
   panel(0.66);
-  bigText('游 戏 结 束', 190, 54, '#e73c2e');
-  bigText('GAME OVER', 240, 24, '#fff');
-  bigText(`最终得分 ${score}    金币 ×${coins}`, 292, 18, '#ffd23f');
-  if (Math.floor(animT * 2) % 2 === 0) bigText('点击屏幕 或 按空格键 重新开始', 350, 20, '#fff');
+  bigText('游 戏 结 束', 180, 54, '#e73c2e');
+  bigText('GAME OVER', 230, 24, '#fff');
+  bigText(`止步于 世界 ${world}-1 · ${WORLD_NAMES[world - 1]}`, 274, 17, '#cfe4ff');
+  bigText(`最终得分 ${score}    金币 ×${coins}`, 302, 18, '#ffd23f');
+  if (Math.floor(animT * 2) % 2 === 0) bigText('点击屏幕 或 按空格键 重新开始', 356, 20, '#fff');
 }
 function drawWin() {
   if (winPhase < 2) {
     hudText('CLEAR!', W / 2 - 60, 120, 30, 'left');
     return;
   }
+  bigText(`世界 ${world}-1 通关！`, 130, 30, '#ffd23f');
+  if (world < MAX_WORLD) {
+    bigText(`即将进入 世界 ${world + 1}-1 · ${WORLD_NAMES[world]} ...`, 172, 18, '#cfe4ff');
+  }
+}
+function drawEnd() {
   panel(0.5);
-  bigText('🏁 通 关 成 功 ！', 170, 50, '#ffd23f');
-  bigText('COURSE CLEAR', 218, 22, '#fff');
-  bigText(`得分 ${score}    金币 ×${coins}    剩余生命 ×${lives}`, 272, 18, '#fff');
-  bigText(`时间奖励已计入（TIME ×10）`, 300, 14, '#cfe4ff');
-  if (Math.floor(animT * 2) % 2 === 0) bigText('点击屏幕 或 按空格键 再玩一次', 356, 20, '#fff');
+  bigText('🏆 恭 喜 通 关 全 部 世 界 ！', 160, 44, '#ffd23f');
+  bigText('THANK YOU MARIO!', 210, 22, '#fff');
+  bigText(`总得分 ${score}    金币 ×${coins}    剩余生命 ×${lives}`, 262, 18, '#fff');
+  bigText('绿野平原 ✓    地下迷窟 ✓    星空险境 ✓', 292, 15, '#cfe4ff');
+  if (Math.floor(animT * 2) % 2 === 0) bigText('点击屏幕 或 按空格键 再玩一次', 350, 20, '#fff');
 }
 function drawPause() {
   panel(0.5);
@@ -1072,10 +1308,7 @@ function drawPause() {
 
 /* ================= 渲染 ================= */
 function render() {
-  drawSky();
-  drawClouds();
-  drawHills();
-  drawBushes();
+  drawBackground();
   drawCastle();
   drawFlag();
   drawTiles();
@@ -1092,7 +1325,7 @@ function render() {
   for (const g of enemies) if (!g.dead) drawGoomba(g);
 
   // 玩家
-  if (state !== 'OVER') {
+  if (state !== 'OVER' && state !== 'END' && state !== 'MENU') {
     const frame = marioFrame(player);
     const px = Math.round(player.x - camX) - 1;
     const py = Math.round(player.y) + player.h - 32 + frameBottomPad(frame);
@@ -1107,16 +1340,19 @@ function render() {
   }
   ctx.globalAlpha = 1;
 
-  drawHUD();
+  if (state !== 'INTRO') drawHUD();
 
   if (state === 'MENU') drawMenu();
+  else if (state === 'INTRO') drawIntro();
   else if (state === 'OVER') drawGameOver();
   else if (state === 'WIN') drawWin();
+  else if (state === 'END') drawEnd();
   else if (state === 'PAUSE') drawPause();
 }
 
 /* ================= 主循环（固定步长 60Hz） ================= */
-resetLevel(true);
+buildLevel(1);
+resetLevel();
 state = 'MENU';
 let last = performance.now(), acc = 0;
 function frame(now) {
